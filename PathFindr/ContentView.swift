@@ -7,13 +7,15 @@
 
 import SwiftUI
 import ARKit
+import UIKit
+import AVFoundation
+import MediaPlayer
 
 // Backwards compatibility wrapper for original ContentView reference
 struct ContentView: View { @EnvironmentObject var navigator: Navigator; var body: some View { NavigationRootView() } }
 
 struct NavigationRootView: View {
     @EnvironmentObject var navigator: Navigator
-    @State private var showMap: Bool = false
     @StateObject private var transcriber = SpeechTranscriber()
     @State private var lastTranscript: String = ""
 
@@ -44,22 +46,10 @@ struct NavigationRootView: View {
             .accessibilityLabel(navigator.isRunning ? "Stop" : "Start")
             .accessibilityHint("Double tap to " + (navigator.isRunning ? "stop navigation" : "start navigation"))
 
-            if showMap {
-                MiniMapView(grid: navigator.gridSnapshot)
-                    .frame(height: 200)
-                    .transition(.opacity)
-            }
-
-            Toggle("Developer Map", isOn: $showMap)
-                .toggleStyle(SwitchToggleStyle())
-                .padding(.horizontal)
-
             Toggle("AI Descriptions", isOn: $navigator.useGeminiDescriptions)
                 .toggleStyle(SwitchToggleStyle())
                 .padding(.horizontal)
 
-            // Hold-to-speak test button
-            holdToSpeakButton
             if !lastTranscript.isEmpty {
                 Text("Heard: \(lastTranscript)")
                     .font(.caption)
@@ -68,6 +58,13 @@ struct NavigationRootView: View {
             }
         }
         .padding()
+        .background(SideButtonHandler(transcriber: transcriber, onTranscript: { text in
+            lastTranscript = text
+            // Send transcript to navigator for Gemini processing
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                navigator.handleVoicePrompt(text, currentFrame: navigator.currentFrame)
+            }
+        }))
         .onAppear { navigator.announceStartup(); transcriber.requestPermissions() }
     }
 
@@ -76,28 +73,184 @@ struct NavigationRootView: View {
     }
 }
 
-private extension NavigationRootView {
-    var holdToSpeakButton: some View {
-        let isRec = transcriber.isRecording
-        return ZStack {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(isRec ? Color.orange : Color.blue)
-            Text(isRec ? "Listening…" : "Hold to Speak")
-                .foregroundColor(.white)
-                .bold()
-                .padding()
-        }
-        .frame(height: 60)
-        .accessibilityLabel("Hold to Speak")
-        .accessibilityHint("Press and hold to record a voice command")
-        .onLongPressGesture(minimumDuration: .infinity, perform: {}, onPressingChanged: { pressing in
-            if pressing { transcriber.start() } else {
-                transcriber.stop { text in
-                    lastTranscript = text
-                    print("[Voice] Final transcript: \(text)")
-                }
+// MARK: Side Button Handler (Action Button primary, Volume Button fallback)
+struct SideButtonHandler: UIViewControllerRepresentable {
+    let transcriber: SpeechTranscriber
+    let onTranscript: (String) -> Void
+    
+    func makeUIViewController(context: Context) -> SideButtonViewController {
+        let controller = SideButtonViewController()
+        controller.transcriber = transcriber
+        controller.onTranscript = onTranscript
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: SideButtonViewController, context: Context) {
+        uiViewController.transcriber = transcriber
+        uiViewController.onTranscript = onTranscript
+    }
+}
+
+class SideButtonViewController: UIViewController {
+    var transcriber: SpeechTranscriber?
+    var onTranscript: ((String) -> Void)?
+    
+    // Action Button support
+    private var isPressing = false
+    
+    // Volume Button fallback support
+    private var volumeView: MPVolumeView!
+    private var isRecording = false
+    private var lastVolume: Float = 0
+    private var volumeTimer: Timer?
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        
+        // Setup volume button monitoring (fallback)
+        setupVolumeMonitoring()
+    }
+    
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        becomeFirstResponder()
+        lastVolume = AVAudioSession.sharedInstance().outputVolume
+    }
+    
+    override var canBecomeFirstResponder: Bool {
+        return true
+    }
+    
+    // MARK: Action Button Support (Primary)
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+        for press in presses {
+            // Detect Action Button (menu press type) - primary method
+            if press.type == .menu {
+                isPressing = true
+                startRecording()
+                handled = true
+                break
             }
-        })
+        }
+        if !handled {
+            super.pressesBegan(presses, with: event)
+        }
+    }
+    
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+        for press in presses {
+            if press.type == .menu {
+                if isPressing {
+                    isPressing = false
+                    stopRecording()
+                }
+                handled = true
+                break
+            }
+        }
+        if !handled {
+            super.pressesEnded(presses, with: event)
+        }
+    }
+    
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+        for press in presses {
+            if press.type == .menu {
+                if isPressing {
+                    isPressing = false
+                    stopRecording()
+                }
+                handled = true
+                break
+            }
+        }
+        if !handled {
+            super.pressesCancelled(presses, with: event)
+        }
+    }
+    
+    // MARK: Volume Button Support (Fallback)
+    private func setupVolumeMonitoring() {
+        // Create hidden volume view to intercept volume button presses
+        volumeView = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
+        volumeView.isHidden = true
+        view.addSubview(volumeView)
+        
+        // Monitor volume changes
+        volumeTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            self?.checkVolumeChange()
+        }
+    }
+    
+    private func checkVolumeChange() {
+        let currentVolume = AVAudioSession.sharedInstance().outputVolume
+        
+        // Detect volume button press (volume changed)
+        if abs(currentVolume - lastVolume) > 0.01 {
+            let volumeIncreased = currentVolume > lastVolume
+            handleVolumeButtonPress(isVolumeUp: volumeIncreased)
+            // Reset volume to original to prevent actual volume change
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.resetVolume()
+            }
+        }
+        
+        lastVolume = currentVolume
+    }
+    
+    private func handleVolumeButtonPress(isVolumeUp: Bool) {
+        // Only use volume button if Action Button is not being used
+        guard !isPressing else { return }
+        
+        if isVolumeUp {
+            // Volume Up = Start recording
+            if !isRecording {
+                startRecording()
+                print("[Volume] Volume Up - Recording started")
+            }
+        } else {
+            // Volume Down = Stop recording
+            if isRecording {
+                stopRecording()
+                print("[Volume] Volume Down - Recording stopped")
+            }
+        }
+    }
+    
+    private func resetVolume() {
+        // Try to restore volume to prevent actual volume change
+        let slider = volumeView.subviews.first(where: { $0 is UISlider }) as? UISlider
+        slider?.value = lastVolume
+    }
+    
+    // MARK: Recording Control
+    private func startRecording() {
+        guard !isRecording else { return }
+        isRecording = true
+        transcriber?.start()
+        print("[Button] Recording started")
+    }
+    
+    private func stopRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        
+        transcriber?.stop { [weak self] text in
+            DispatchQueue.main.async {
+                self?.onTranscript?(text)
+                print("[Voice] Final transcript: \(text)")
+            }
+        }
+        print("[Button] Recording stopped")
+    }
+    
+    deinit {
+        volumeTimer?.invalidate()
     }
 }
 

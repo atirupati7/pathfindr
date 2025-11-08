@@ -24,6 +24,81 @@ final class GeminiClient {
     }()
 
     init(apiKey: String) { self.apiKey = apiKey }
+    
+    // Prompted query mode - for user questions with image context
+    func queryPrompted(frame: ARFrame, userPrompt: String, expectsLongAnswer: Bool, completion: @escaping (String?) -> Void) {
+        guard let image = CIImage(cvPixelBuffer: frame.capturedImage).toJPEGData(compressionQuality: 0.7) else {
+            completion(nil)
+            return
+        }
+        guard !apiKey.isEmpty else {
+            completion("API key not configured")
+            return
+        }
+        
+        let b64 = image.base64EncodedString()
+        var comps = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "key", value: apiKey)]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        // Determine answer style based on question type
+        let answerStyle = expectsLongAnswer 
+            ? "Provide a detailed, comprehensive answer. Include relevant context and specifics."
+            : "Provide a concise, direct answer. Be brief and to the point."
+        
+        // Enhanced prompt for OCR and detailed questions
+        let systemPrompt = """
+        You are a helpful visual assistant for a visually impaired user. The user is asking: "\(userPrompt)"
+        
+        \(answerStyle)
+        
+        For OCR tasks (reading text, menus, signs, crosswalk signals), read the text exactly as it appears.
+        For object identification, describe what you see clearly.
+        For navigation questions, provide specific directional information.
+        Answer directly without preamble or filler phrases.
+        """
+        
+        let body: [String: Any] = [
+            "contents": [[
+                "parts": [
+                    ["text": systemPrompt],
+                    ["inline_data": ["mime_type": "image/jpeg", "data": b64]]
+                ]
+            ]],
+            "generationConfig": [
+                "temperature": expectsLongAnswer ? 0.7 : 0.3,
+                "maxOutputTokens": expectsLongAnswer ? 1024 : 256
+            ]
+        ]
+        
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body, options: [])
+        
+        session.dataTask(with: req) { data, resp, err in
+            if let err = err {
+                print("[Gemini] Prompted query network error: \(err.localizedDescription)")
+                completion(nil)
+                return
+            }
+            if let http = resp as? HTTPURLResponse {
+                print("[Gemini] Prompted query HTTP status: \(http.statusCode)")
+            }
+            if let data = data {
+                if let errMsg = self.extractErrorMessage(data: data) {
+                    print("[Gemini] Prompted query API error: \(errMsg)")
+                    completion(nil)
+                    return
+                }
+                if let response = self.parseDescription(data: data) {
+                    print("[Gemini] Prompted query response: \(response.prefix(200))...")
+                    completion(response)
+                    return
+                }
+            }
+            completion(nil)
+        }.resume()
+    }
 
     func maybeDescribe(frame: ARFrame, completion: @escaping (String?) -> Void) {
         let now = CACurrentMediaTime()

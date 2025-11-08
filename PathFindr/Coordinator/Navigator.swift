@@ -7,6 +7,8 @@ import Combine
 
 final class Navigator: NSObject, ObservableObject {
     enum Mode { case scanning, cruise, avoid }
+    enum GeminiMode { case streaming, prompted }
+    
     struct State { var statusText: String = "Idle" }
 
     @Published var state = State()
@@ -20,7 +22,7 @@ final class Navigator: NSObject, ObservableObject {
     private let beacon = SpatialBeacon()
     private let haptics = Haptics()
     private let motion = MotionHeading()
-    private let gemini = GeminiClient(apiKey: "AIzaSyAxhQo9ovt2fhs6flIQ_mkA7Y7D0mcMY0s")
+    private let gemini = GeminiClient(apiKey: APIKeys.geminiAPIKey)
 
     private var grid = OccupancyGrid.makeDefault()
     private var lastAnnounced: [String: Float] = [:] // label -> lastFeet
@@ -28,6 +30,9 @@ final class Navigator: NSObject, ObservableObject {
     private var mode: Mode = .scanning
     @Published var useGeminiDescriptions: Bool = true
     private var lastGeminiText: String = ""
+    private var geminiMode: GeminiMode = .streaming
+    private var pendingFrame: ARFrame?
+    private var isProcessingPrompt = false
 
     private var depthTimer: CADisplayLink?
 
@@ -37,6 +42,105 @@ final class Navigator: NSObject, ObservableObject {
     }
 
     func announceStartup() { speech.speak("Path Finder ready") }
+    
+    // Handle voice prompt from user
+    func handleVoicePrompt(_ transcript: String, currentFrame: ARFrame?) {
+        guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        
+        print("[Navigator] Voice prompt received: \(transcript)")
+        
+        // Switch to prompted mode
+        geminiMode = .prompted
+        isProcessingPrompt = true
+        
+        // Store current frame if available
+        if let frame = currentFrame {
+            pendingFrame = frame
+        }
+        
+        // Determine if user expects long or short answer
+        let expectsLongAnswer = determineAnswerLength(transcript: transcript)
+        
+        // Get the most recent frame
+        guard let frame = currentFrame ?? pendingFrame else {
+            print("[Navigator] No frame available for prompted query")
+            speech.speak("Please wait for camera to initialize")
+            geminiMode = .streaming
+            isProcessingPrompt = false
+            return
+        }
+        
+        // Send to Gemini
+        gemini.queryPrompted(frame: frame, userPrompt: transcript, expectsLongAnswer: expectsLongAnswer) { [weak self] response in
+            guard let self = self else { return }
+            self.isProcessingPrompt = false
+            
+            if let answer = response, !answer.isEmpty {
+                print("[Navigator] Prompted answer: \(answer)")
+                Task { @MainActor in
+                    self.speech.speak(answer)
+                }
+            } else {
+                print("[Navigator] No response from prompted query")
+                Task { @MainActor in
+                    self.speech.speak("I couldn't process that request")
+                }
+            }
+            
+            // Return to streaming mode after answering
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.geminiMode = .streaming
+                self.pendingFrame = nil
+            }
+        }
+    }
+    
+    // Determine if user expects a long or short answer based on question type
+    private func determineAnswerLength(transcript: String) -> Bool {
+        let lowercased = transcript.lowercased()
+        
+        // Keywords that suggest long answers
+        let longAnswerKeywords = [
+            "describe", "what is happening", "tell me about", "explain", "details",
+            "what do you see", "what's around", "what's in", "what are"
+        ]
+        
+        // Keywords that suggest short answers
+        let shortAnswerKeywords = [
+            "where is", "where's", "where are", "how many", "what color",
+            "read", "what does it say", "what's written", "what sign", "what menu"
+        ]
+        
+        // OCR tasks are usually short
+        let ocrKeywords = [
+            "read", "what does it say", "what's written", "what sign", "what menu",
+            "crosswalk", "signal", "text", "words"
+        ]
+        
+        // Check for OCR first (usually short)
+        for keyword in ocrKeywords {
+            if lowercased.contains(keyword) {
+                return false
+            }
+        }
+        
+        // Check for short answer keywords
+        for keyword in shortAnswerKeywords {
+            if lowercased.contains(keyword) {
+                return false
+            }
+        }
+        
+        // Check for long answer keywords
+        for keyword in longAnswerKeywords {
+            if lowercased.contains(keyword) {
+                return true
+            }
+        }
+        
+        // Default to short for navigation/quick questions
+        return false
+    }
 
     func start() {
         isRunning = true
@@ -183,22 +287,28 @@ final class Navigator: NSObject, ObservableObject {
 extension Navigator: ARDepthSessionDelegate {
     func arDepthSession(_ session: ARDepthSession, didUpdate frame: ARFrame) {
         guard isRunning else { return }
+        
+        // Store latest frame for prompted queries
+        pendingFrame = frame
+        
         floor.process(frame: frame)
         grid.reset()
         grid.integrateDepth(frame: frame, floorY: floor.floorY)
         grid.inflate(radiusCells: 1)
-    checkDangerStop(frame: frame)
+        checkDangerStop(frame: frame)
         processDetections(frame: frame)
-        if useGeminiDescriptions {
+        
+        // Only do streaming descriptions if not in prompted mode and not processing a prompt
+        if useGeminiDescriptions && geminiMode == .streaming && !isProcessingPrompt {
             gemini.maybeDescribe(frame: frame) { [weak self] text in
                 guard let self, let t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return }
                 // Log and dedupe
-                print("[Navigator] Gemini: \(t)")
+                print("[Navigator] Gemini streaming: \(t)")
                 guard t != self.lastGeminiText else { return }
                 self.lastGeminiText = t
                 Task { @MainActor in self.speech.speak(t) }
             }
-        } else {
+        } else if !useGeminiDescriptions {
             planAndGuide()
         }
     }
@@ -240,4 +350,9 @@ private extension Navigator {
 extension Navigator {
     var session: ARSession? { ar.arSession }
     @MainActor var overlayText: String { String(format: "yaw: %.0f°", motion.currentYawRadians * 180 / .pi) }
+    
+    // Expose current frame for voice prompts
+    var currentFrame: ARFrame? {
+        return ar.arSession.currentFrame
+    }
 }
