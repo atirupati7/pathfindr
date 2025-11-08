@@ -1,0 +1,4 @@
+Add these keys in Info.plist:
+- NSCameraUsageDescription: "Used for spatial navigation"
+- NSMotionUsageDescription: "Used to determine device heading for navigation"
+Enable Background Modes -> Audio, AirPlay, and Picture in Picture
