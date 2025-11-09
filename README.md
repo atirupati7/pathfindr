@@ -70,8 +70,9 @@ The project uses Swift Package Manager for Firebase dependencies:
 
 1. Create a Firebase project at [Firebase Console](https://console.firebase.google.com/)
 2. Add an iOS app with bundle identifier: `com.atirupati07.pathfindr`
-3. Download `GoogleService-Info.plist` and add it to the `PathFindr` folder
-4. Enable Firestore Database in Firebase Console
+3. Download `GoogleService-Info.plist` from Firebase Console
+4. Copy `PathFindr/GoogleService-Info.example.plist` to `PathFindr/GoogleService-Info.plist` and fill in your Firebase credentials
+5. Enable Firestore Database in Firebase Console
 5. Set up Firestore security rules (test mode for development):
    ```
    rules_version = '2';
@@ -167,7 +168,8 @@ PathFindr/
 │   └── SpeechTranscriber.swift    # Voice input
 ├── ContentView.swift              # Main UI with hold-to-speak button
 ├── Info.plist                     # App configuration
-└── GoogleService-Info.plist       # Firebase configuration
+├── GoogleService-Info.plist       # Firebase configuration (not in repo)
+└── GoogleService-Info.example.plist  # Firebase configuration template
 ```
 
 ## Configuration

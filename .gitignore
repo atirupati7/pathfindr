@@ -91,4 +91,5 @@ iOSInjectionProject/
 
 # API Keys - Keep sensitive keys out of version control
 PathFindr/System/APIKeys.swift
+PathFindr/GoogleService-Info.plist
 
