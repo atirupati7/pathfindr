@@ -9,7 +9,6 @@ import SwiftUI
 import ARKit
 import UIKit
 import AVFoundation
-import MediaPlayer
 
 // Backwards compatibility wrapper for original ContentView reference
 struct ContentView: View { @EnvironmentObject var navigator: Navigator; var body: some View { NavigationRootView() } }
@@ -18,53 +17,92 @@ struct NavigationRootView: View {
     @EnvironmentObject var navigator: Navigator
     @StateObject private var transcriber = SpeechTranscriber()
     @State private var lastTranscript: String = ""
+    @State private var isRecording = false
+    @State private var isPressingButton = false
 
     var body: some View {
-        VStack(spacing: 16) {
-            CameraPreview(session: navigator.session)
-                .frame(height: 240)
-                .overlay(alignment: .topLeading) {
-                    Text(navigator.overlayText)
-                        .font(.caption.monospaced())
-                        .padding(6)
-                        .background(.black.opacity(0.4))
-                        .foregroundColor(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-            Text(navigator.state.statusText)
-                .font(.headline)
-                .accessibilityLabel(navigator.state.statusText)
-
-            Button(action: toggle) {
-                Text(navigator.isRunning ? "Stop Guidance" : "Start Guidance")
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(navigator.isRunning ? Color.red : Color.green)
-                    .foregroundColor(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        ZStack {
+            // Full screen camera preview - only show when AR is ready
+            if navigator.isARReady {
+                CameraPreview(session: navigator.session)
+                    .edgesIgnoringSafeArea(.all)
+            } else {
+                // Show loading/initializing state
+                Color.black
+                    .edgesIgnoringSafeArea(.all)
+                    .overlay {
+                        VStack {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            Text("Initializing camera...")
+                                .foregroundColor(.white)
+                                .padding(.top, 8)
+                        }
+                    }
             }
-            .accessibilityLabel(navigator.isRunning ? "Stop" : "Start")
-            .accessibilityHint("Double tap to " + (navigator.isRunning ? "stop navigation" : "start navigation"))
+            
+            // Overlay UI at bottom
+            VStack {
+                Spacer()
+                VStack(spacing: 12) {
+                    VStack(spacing: 12) {
+                        Text(navigator.state.statusText)
+                            .font(.headline)
+                            .padding()
+                            .background(.black.opacity(0.6))
+                            .foregroundColor(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .accessibilityLabel(navigator.state.statusText)
 
-            Toggle("AI Descriptions", isOn: $navigator.useGeminiDescriptions)
-                .toggleStyle(SwitchToggleStyle())
-                .padding(.horizontal)
+                        Button(action: toggle) {
+                            Text(navigator.isRunning ? "Stop Guidance" : "Start Guidance")
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(navigator.isRunning ? Color.red : Color.green)
+                                .foregroundColor(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                        .accessibilityLabel(navigator.isRunning ? "Stop" : "Start")
+                        .accessibilityHint("Double tap to " + (navigator.isRunning ? "stop navigation" : "start navigation"))
 
-            if !lastTranscript.isEmpty {
-                Text("Heard: \(lastTranscript)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
+                        // Hold to Speak button
+                        HoldToSpeakButton(
+                            isRecording: $isRecording,
+                            isPressing: $isPressingButton,
+                            onStartRecording: {
+                                // Stop any ongoing speech immediately when starting to record
+                                navigator.stopSpeech()
+                                // Stop streaming descriptions and distance announcements
+                                navigator.stopStreaming()
+                                transcriber.start()
+                            },
+                            onStopRecording: {
+                                transcriber.stop { text in
+                                    DispatchQueue.main.async {
+                                        // Send transcript to navigator for Gemini processing
+                                        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                            lastTranscript = text
+                                            navigator.handleVoicePrompt(text, currentFrame: navigator.currentFrame)
+                                        }
+                                    }
+                                }
+                            }
+                        )
+
+                        if !lastTranscript.isEmpty {
+                            Text("Heard: \(lastTranscript)")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                                .padding(8)
+                                .background(.black.opacity(0.6))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .lineLimit(2)
+                        }
+                    }
+                    .padding()
+                }
             }
         }
-        .padding()
-        .background(SideButtonHandler(transcriber: transcriber, onTranscript: { text in
-            lastTranscript = text
-            // Send transcript to navigator for Gemini processing
-            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                navigator.handleVoicePrompt(text, currentFrame: navigator.currentFrame)
-            }
-        }))
         .onAppear { navigator.announceStartup(); transcriber.requestPermissions() }
     }
 
@@ -73,184 +111,64 @@ struct NavigationRootView: View {
     }
 }
 
-// MARK: Side Button Handler (Action Button primary, Volume Button fallback)
-struct SideButtonHandler: UIViewControllerRepresentable {
-    let transcriber: SpeechTranscriber
-    let onTranscript: (String) -> Void
+// MARK: Hold to Speak Button
+struct HoldToSpeakButton: View {
+    @Binding var isRecording: Bool
+    @Binding var isPressing: Bool
+    let onStartRecording: () -> Void
+    let onStopRecording: () -> Void
     
-    func makeUIViewController(context: Context) -> SideButtonViewController {
-        let controller = SideButtonViewController()
-        controller.transcriber = transcriber
-        controller.onTranscript = onTranscript
-        return controller
-    }
-    
-    func updateUIViewController(_ uiViewController: SideButtonViewController, context: Context) {
-        uiViewController.transcriber = transcriber
-        uiViewController.onTranscript = onTranscript
-    }
-}
-
-class SideButtonViewController: UIViewController {
-    var transcriber: SpeechTranscriber?
-    var onTranscript: ((String) -> Void)?
-    
-    // Action Button support
-    private var isPressing = false
-    
-    // Volume Button fallback support
-    private var volumeView: MPVolumeView!
-    private var isRecording = false
-    private var lastVolume: Float = 0
-    private var volumeTimer: Timer?
-    
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .clear
-        view.isUserInteractionEnabled = false
-        
-        // Setup volume button monitoring (fallback)
-        setupVolumeMonitoring()
-    }
-    
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        becomeFirstResponder()
-        lastVolume = AVAudioSession.sharedInstance().outputVolume
-    }
-    
-    override var canBecomeFirstResponder: Bool {
-        return true
-    }
-    
-    // MARK: Action Button Support (Primary)
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        var handled = false
-        for press in presses {
-            // Detect Action Button (menu press type) - primary method
-            if press.type == .menu {
-                isPressing = true
-                startRecording()
-                handled = true
-                break
-            }
-        }
-        if !handled {
-            super.pressesBegan(presses, with: event)
-        }
-    }
-    
-    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        var handled = false
-        for press in presses {
-            if press.type == .menu {
-                if isPressing {
-                    isPressing = false
-                    stopRecording()
-                }
-                handled = true
-                break
-            }
-        }
-        if !handled {
-            super.pressesEnded(presses, with: event)
-        }
-    }
-    
-    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        var handled = false
-        for press in presses {
-            if press.type == .menu {
-                if isPressing {
-                    isPressing = false
-                    stopRecording()
-                }
-                handled = true
-                break
-            }
-        }
-        if !handled {
-            super.pressesCancelled(presses, with: event)
-        }
-    }
-    
-    // MARK: Volume Button Support (Fallback)
-    private func setupVolumeMonitoring() {
-        // Create hidden volume view to intercept volume button presses
-        volumeView = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
-        volumeView.isHidden = true
-        view.addSubview(volumeView)
-        
-        // Monitor volume changes
-        volumeTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            self?.checkVolumeChange()
-        }
-    }
-    
-    private func checkVolumeChange() {
-        let currentVolume = AVAudioSession.sharedInstance().outputVolume
-        
-        // Detect volume button press (volume changed)
-        if abs(currentVolume - lastVolume) > 0.01 {
-            let volumeIncreased = currentVolume > lastVolume
-            handleVolumeButtonPress(isVolumeUp: volumeIncreased)
-            // Reset volume to original to prevent actual volume change
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                self?.resetVolume()
-            }
-        }
-        
-        lastVolume = currentVolume
-    }
-    
-    private func handleVolumeButtonPress(isVolumeUp: Bool) {
-        // Only use volume button if Action Button is not being used
-        guard !isPressing else { return }
-        
-        if isVolumeUp {
-            // Volume Up = Start recording
-            if !isRecording {
-                startRecording()
-                print("[Volume] Volume Up - Recording started")
-            }
-        } else {
-            // Volume Down = Stop recording
+    var body: some View {
+        ZStack {
+            // Button background
+            Circle()
+                .fill(isRecording ? Color.red : (isPressing ? Color.orange : Color.blue))
+                .frame(width: 80, height: 80)
+                .overlay(
+                    Circle()
+                        .stroke(Color.white, lineWidth: 3)
+                )
+                .scaleEffect(isPressing ? 0.9 : 1.0)
+                .animation(.easeInOut(duration: 0.1), value: isPressing)
+            
+            // Button icon/text
             if isRecording {
-                stopRecording()
-                print("[Volume] Volume Down - Recording stopped")
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 30))
+                    .foregroundColor(.white)
+            } else {
+                Image(systemName: "mic")
+                    .font(.system(size: 30))
+                    .foregroundColor(.white)
             }
         }
-    }
-    
-    private func resetVolume() {
-        // Try to restore volume to prevent actual volume change
-        let slider = volumeView.subviews.first(where: { $0 is UISlider }) as? UISlider
-        slider?.value = lastVolume
-    }
-    
-    // MARK: Recording Control
-    private func startRecording() {
-        guard !isRecording else { return }
-        isRecording = true
-        transcriber?.start()
-        print("[Button] Recording started")
-    }
-    
-    private func stopRecording() {
-        guard isRecording else { return }
-        isRecording = false
-        
-        transcriber?.stop { [weak self] text in
-            DispatchQueue.main.async {
-                self?.onTranscript?(text)
-                print("[Voice] Final transcript: \(text)")
-            }
-        }
-        print("[Button] Recording stopped")
-    }
-    
-    deinit {
-        volumeTimer?.invalidate()
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    if !isPressing {
+                        isPressing = true
+                        isRecording = true
+                        // Haptic feedback when starting to record
+                        let generator = UIImpactFeedbackGenerator(style: .medium)
+                        generator.impactOccurred()
+                        onStartRecording()
+                        print("[HoldButton] Recording started")
+                    }
+                }
+                .onEnded { _ in
+                    if isPressing {
+                        isPressing = false
+                        isRecording = false
+                        // Haptic feedback when stopping recording
+                        let generator = UIImpactFeedbackGenerator(style: .light)
+                        generator.impactOccurred()
+                        onStopRecording()
+                        print("[HoldButton] Recording stopped")
+                    }
+                }
+        )
+        .accessibilityLabel(isRecording ? "Recording, release to stop" : "Hold to speak")
+        .accessibilityHint("Press and hold to record your voice")
     }
 }
 

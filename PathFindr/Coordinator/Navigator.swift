@@ -4,6 +4,7 @@ import ARKit
 import AVFoundation
 import SwiftUI
 import Combine
+import FirebaseCore
 
 final class Navigator: NSObject, ObservableObject {
     enum Mode { case scanning, cruise, avoid }
@@ -14,6 +15,7 @@ final class Navigator: NSObject, ObservableObject {
     @Published var state = State()
     @Published private(set) var isRunning = false
     @Published var gridSnapshot: OccupancyGrid? = nil
+    @Published var isARReady = false
 
     private let ar = ARDepthSession()
     private let floor = FloorEstimator()
@@ -22,7 +24,9 @@ final class Navigator: NSObject, ObservableObject {
     private let beacon = SpatialBeacon()
     private let haptics = Haptics()
     private let motion = MotionHeading()
-    private let gemini = GeminiClient(apiKey: APIKeys.geminiAPIKey)
+    // Use Firebase for conversation history storage
+    private let conversationService: ConversationService
+    private let gemini: GeminiClient
 
     private var grid = OccupancyGrid.makeDefault()
     private var lastAnnounced: [String: Float] = [:] // label -> lastFeet
@@ -33,15 +37,59 @@ final class Navigator: NSObject, ObservableObject {
     private var geminiMode: GeminiMode = .streaming
     private var pendingFrame: ARFrame?
     private var isProcessingPrompt = false
+    private var wasStreamingBeforePrompt = false
 
     private var depthTimer: CADisplayLink?
 
     override init() {
+        // Initialize conversation service (Firebase if available, otherwise Mock)
+        // Check if Firebase is initialized, if not use MockConversationService as fallback
+        if FirebaseApp.app() != nil {
+            self.conversationService = FirebaseConversationService(userId: "default_user")
+            print("[Navigator] Using Firebase for conversation history")
+        } else {
+            self.conversationService = MockConversationService()
+            print("[Navigator] Firebase not available, using MockConversationService")
+        }
+        // Initialize GeminiClient with conversation service
+        self.gemini = GeminiClient(apiKey: APIKeys.geminiAPIKey, conversationService: conversationService)
         super.init()
         ar.delegate = self
+        // Start AR session immediately for live video feed
+        ar.start()
     }
 
     func announceStartup() { speech.speak("Path Finder ready") }
+    
+    // Stop any ongoing speech
+    func stopSpeech() {
+        speech.stop()
+    }
+    
+    // Stop streaming descriptions (called when user starts recording)
+    func stopStreaming() {
+        // Stop any ongoing speech immediately
+        speech.stop()
+        
+        // Track if streaming should be active after the prompt
+        // Resume streaming if guidance is running and Gemini descriptions are enabled
+        let shouldStream = (isRunning && useGeminiDescriptions)
+        
+        if shouldStream {
+            // We want to resume streaming after the prompt, so mark it
+            wasStreamingBeforePrompt = true
+            // Switch to prompted mode to stop current streaming
+            if geminiMode == .streaming {
+                geminiMode = .prompted
+            }
+            isProcessingPrompt = true
+            print("[Navigator] Stopped streaming for recording (will resume after prompt if guidance still running)")
+        } else {
+            // If streaming shouldn't be active, don't resume it later
+            wasStreamingBeforePrompt = false
+            print("[Navigator] Streaming not active - guidance not running or Gemini disabled")
+        }
+    }
     
     // Handle voice prompt from user
     func handleVoicePrompt(_ transcript: String, currentFrame: ARFrame?) {
@@ -49,9 +97,25 @@ final class Navigator: NSObject, ObservableObject {
         
         print("[Navigator] Voice prompt received: \(transcript)")
         
-        // Switch to prompted mode
-        geminiMode = .prompted
-        isProcessingPrompt = true
+        // Ensure we're in prompted mode (stopStreaming may have already set this)
+        // But preserve wasStreamingBeforePrompt if it was already set
+        if !isProcessingPrompt {
+            // Only set wasStreamingBeforePrompt if it wasn't already set by stopStreaming()
+            // Check if streaming should be active based on current state
+            let shouldStream = (isRunning && useGeminiDescriptions)
+            if shouldStream && geminiMode == .streaming {
+                wasStreamingBeforePrompt = true
+            }
+            geminiMode = .prompted
+            isProcessingPrompt = true
+        }
+        
+        // Stop any ongoing speech immediately
+        speech.stop()
+        
+        if wasStreamingBeforePrompt {
+            print("[Navigator] Will resume streaming after prompt is answered")
+        }
         
         // Store current frame if available
         if let frame = currentFrame {
@@ -64,33 +128,71 @@ final class Navigator: NSObject, ObservableObject {
         // Get the most recent frame
         guard let frame = currentFrame ?? pendingFrame else {
             print("[Navigator] No frame available for prompted query")
-            speech.speak("Please wait for camera to initialize")
-            geminiMode = .streaming
-            isProcessingPrompt = false
+            speech.speak("Please wait for camera to initialize") {
+                // After speaking error message, resume streaming if it was active
+                self.isProcessingPrompt = false
+                if self.wasStreamingBeforePrompt {
+                    // Only resume streaming if guidance is still running and Gemini descriptions are enabled
+                    if self.isRunning && self.useGeminiDescriptions {
+                        self.geminiMode = .streaming
+                        self.wasStreamingBeforePrompt = false
+                        print("[Navigator] Resumed streaming mode after error")
+                    } else {
+                        self.wasStreamingBeforePrompt = false
+                        print("[Navigator] Not resuming streaming - guidance stopped or Gemini disabled")
+                    }
+                }
+            }
             return
         }
         
-        // Send to Gemini
+        // Send to Gemini with conversation history
         gemini.queryPrompted(frame: frame, userPrompt: transcript, expectsLongAnswer: expectsLongAnswer) { [weak self] response in
             guard let self = self else { return }
-            self.isProcessingPrompt = false
             
             if let answer = response, !answer.isEmpty {
                 print("[Navigator] Prompted answer: \(answer)")
                 Task { @MainActor in
-                    self.speech.speak(answer)
+                    // Speak the answer and only resume streaming after speech is fully finished
+                    self.speech.speak(answer) {
+                        // Speech finished - now safe to resume streaming
+                        self.isProcessingPrompt = false
+                        if self.wasStreamingBeforePrompt {
+                            // Only resume streaming if guidance is still running and Gemini descriptions are enabled
+                            if self.isRunning && self.useGeminiDescriptions {
+                                self.geminiMode = .streaming
+                                self.wasStreamingBeforePrompt = false
+                                print("[Navigator] Resumed streaming mode after prompt answer finished")
+                            } else {
+                                // Guidance was stopped or Gemini descriptions disabled, don't resume
+                                self.wasStreamingBeforePrompt = false
+                                print("[Navigator] Not resuming streaming - guidance stopped or Gemini disabled")
+                            }
+                        }
+                        self.pendingFrame = nil
+                    }
                 }
             } else {
                 print("[Navigator] No response from prompted query")
                 Task { @MainActor in
-                    self.speech.speak("I couldn't process that request")
+                    self.speech.speak("I couldn't process that request") {
+                        // Speech finished - now safe to resume streaming
+                        self.isProcessingPrompt = false
+                        if self.wasStreamingBeforePrompt {
+                            // Only resume streaming if guidance is still running and Gemini descriptions are enabled
+                            if self.isRunning && self.useGeminiDescriptions {
+                                self.geminiMode = .streaming
+                                self.wasStreamingBeforePrompt = false
+                                print("[Navigator] Resumed streaming mode after error message finished")
+                            } else {
+                                // Guidance was stopped or Gemini descriptions disabled, don't resume
+                                self.wasStreamingBeforePrompt = false
+                                print("[Navigator] Not resuming streaming - guidance stopped or Gemini disabled")
+                            }
+                        }
+                        self.pendingFrame = nil
+                    }
                 }
-            }
-            
-            // Return to streaming mode after answering
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                self.geminiMode = .streaming
-                self.pendingFrame = nil
             }
         }
     }
@@ -146,7 +248,7 @@ final class Navigator: NSObject, ObservableObject {
         isRunning = true
         state.statusText = "Starting…"
         motion.start()
-        ar.start()
+        // AR session is already started in init, don't restart it
         depthTimer = CADisplayLink(target: self, selector: #selector(tickTimer))
         depthTimer?.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 20)
         depthTimer?.add(to: .main, forMode: .common)
@@ -156,7 +258,8 @@ final class Navigator: NSObject, ObservableObject {
 
     func stop() {
         isRunning = false
-        ar.stop(); motion.stop()
+        // Keep AR session running for live video feed
+        motion.stop()
         depthTimer?.invalidate(); depthTimer = nil
         beacon.stop(); haptics.stopBuzz()
         state.statusText = "Stopped"
@@ -197,6 +300,9 @@ final class Navigator: NSObject, ObservableObject {
     }
 
     private func maybeSpeak(label: String, distanceFeet: Float) {
+        // Don't announce objects if user is sitting down
+        guard motion.isUserMoving else { return }
+        
         let rounded = max(0.5, (distanceFeet * 2).rounded() / 2) // nearest 0.5, min 0.5
         let last = lastAnnounced[label] ?? .greatestFiniteMagnitude
         // Change threshold 15% to allow more updates
@@ -205,8 +311,55 @@ final class Navigator: NSObject, ObservableObject {
             let name = label.capitalized
             let feetStr = (rounded.truncatingRemainder(dividingBy: 1) == 0) ? String(Int(rounded)) : String(format: "%.1f", rounded)
             print("[Navigator] Speak det: \(name) \(feetStr) ft")
+            // Note: Object detection announcements are now handled by Gemini descriptions with distance
             // speech.speak("\(name) \(feetStr) feet ahead")
         }
+    }
+    
+    // Calculate distance text from depth data
+    private func calculateDistanceText(from frame: ARFrame) -> String {
+        guard let depthMap = frame.sceneDepth?.depthMap ?? frame.smoothedSceneDepth?.depthMap else {
+            return ""
+        }
+        
+        // Get forward depth (center region of frame)
+        let depth = approximateForwardDepth(depthMap: depthMap)
+        guard depth > 0 && depth < 10 else { // Valid range: 0.05m to 10m
+            return ""
+        }
+        
+        // Convert to feet
+        let feet = depth * 3.28084
+        let rounded = max(0.5, (feet * 2).rounded() / 2) // nearest 0.5, min 0.5
+        let feetStr = (rounded.truncatingRemainder(dividingBy: 1) == 0) ? String(Int(rounded)) : String(format: "%.1f", rounded)
+        
+        return "\(feetStr) feet"
+    }
+    
+    // Approximate forward depth from depth map (center region)
+    private func approximateForwardDepth(depthMap: CVPixelBuffer) -> Float {
+        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
+        
+        let w = CVPixelBufferGetWidth(depthMap)
+        let h = CVPixelBufferGetHeight(depthMap)
+        let bpr = CVPixelBufferGetBytesPerRow(depthMap)
+        guard let base = CVPixelBufferGetBaseAddress(depthMap) else { return -1 }
+        
+        var samples: [Float] = []
+        // Sample center region of frame (forward view)
+        for y in stride(from: h/3, to: h*2/3, by: 4) {
+            let row = base.advanced(by: y * bpr).assumingMemoryBound(to: Float32.self)
+            for x in stride(from: w/3, to: w*2/3, by: 4) {
+                let v = row[x]
+                if v.isFinite && v > 0.05 && v < 10 {
+                    samples.append(v)
+                }
+            }
+        }
+        
+        samples.sort()
+        return samples.isEmpty ? -1 : samples[samples.count/2] // Return median depth
     }
 
     private func planAndGuide() {
@@ -286,6 +439,11 @@ final class Navigator: NSObject, ObservableObject {
 
 extension Navigator: ARDepthSessionDelegate {
     func arDepthSession(_ session: ARDepthSession, didUpdate frame: ARFrame) {
+        // Update AR ready state
+        if !isARReady && session.arIsReady {
+            isARReady = true
+        }
+        
         guard isRunning else { return }
         
         // Store latest frame for prompted queries
@@ -302,11 +460,23 @@ extension Navigator: ARDepthSessionDelegate {
         if useGeminiDescriptions && geminiMode == .streaming && !isProcessingPrompt {
             gemini.maybeDescribe(frame: frame) { [weak self] text in
                 guard let self, let t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return }
+                
+                // Double-check we're still in streaming mode (in case mode changed while request was in flight)
+                guard self.geminiMode == .streaming && !self.isProcessingPrompt else {
+                    print("[Navigator] Ignoring streaming response - mode changed to prompted")
+                    return
+                }
+                
                 // Log and dedupe
                 print("[Navigator] Gemini streaming: \(t)")
                 guard t != self.lastGeminiText else { return }
                 self.lastGeminiText = t
-                Task { @MainActor in self.speech.speak(t) }
+                
+                // Calculate distance to nearest object using depth data
+                let distanceText = self.calculateDistanceText(from: frame)
+                let finalText = distanceText.isEmpty ? t : "\(t), \(distanceText)"
+                
+                Task { @MainActor in self.speech.speak(finalText) }
             }
         } else if !useGeminiDescriptions {
             planAndGuide()
@@ -349,7 +519,6 @@ private extension Navigator {
 // MARK: UI accessors
 extension Navigator {
     var session: ARSession? { ar.arSession }
-    @MainActor var overlayText: String { String(format: "yaw: %.0f°", motion.currentYawRadians * 180 / .pi) }
     
     // Expose current frame for voice prompts
     var currentFrame: ARFrame? {

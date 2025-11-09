@@ -73,10 +73,26 @@ final class SpeechTranscriber: ObservableObject {
         audioEngine.inputNode.removeTap(onBus: 0)
         isRecording = false
         print("[Voice] Recording stopped, waiting final…")
+        
+        // Reconfigure audio session back to playback mode for speech output
+        // This ensures volume is restored after recording
+        reconfigureAudioSessionForPlayback()
 
         // Fallback in case we don't get a final callback
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             self?.finish(with: self?.lastText ?? "")
+        }
+    }
+    
+    private func reconfigureAudioSessionForPlayback() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            // Use .playback category with .spokenAudio mode for maximum speech volume
+            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+            try session.setActive(true)
+            print("[Voice] Audio session reconfigured for playback")
+        } catch {
+            print("[Voice] Failed to reconfigure audio session for playback: \(error)")
         }
     }
 
