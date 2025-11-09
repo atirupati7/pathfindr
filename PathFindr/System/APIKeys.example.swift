@@ -13,6 +13,7 @@ struct APIKeys {
     static let firebaseAppID = "YOUR_FIREBASE_APP_ID_HERE"
     static let firebaseProjectID = "YOUR_FIREBASE_PROJECT_ID_HERE"
     static let firebaseMessagingSenderID = "YOUR_FIREBASE_MESSAGING_SENDER_ID_HERE"
+    static let firebaseStorageBucket = "YOUR_FIREBASE_STORAGE_BUCKET_HERE"
 }
 */
 
