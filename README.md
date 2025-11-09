@@ -1,42 +1,98 @@
 # PathFindr
 
-PathFindr is an iOS app that helps visually impaired users navigate their surroundings using ARKit, LiDAR depth sensing, and AI-powered visual descriptions. The app provides real-time audio guidance, object detection, and conversational AI assistance through voice commands.
+**PathFindr** is an iOS application designed to help people who are visually impaired navigate their surroundings using ARKit, LiDAR depth sensing, and a multimodal AI backend powered by Google’s Gemini models. The app provides real-time obstacle detection, spatial audio guidance, haptic feedback, and intelligent conversational assistance—all through a natural, voice-driven interface.
+
+---
 
 ## Features
 
 ### Core Navigation
-- **AR-Based Navigation**: Uses ARKit and LiDAR to detect obstacles and guide users
-- **Real-Time Depth Sensing**: Calculates distances to objects using LiDAR data
-- **Spatial Audio Guidance**: Provides directional audio cues for navigation
-- **Obstacle Detection**: Identifies and warns about objects in the user's path
+
+* **AR-Based Navigation:** Uses Apple’s ARKit and LiDAR sensors to construct a real-time 3D map of the surroundings.
+* **Real-Time Depth Sensing:** Continuously calculates object distances and spatial relationships.
+* **Obstacle Detection:** Identifies and classifies objects as potential hazards.
+* **Spatial Audio Guidance:** Provides directional audio cues to indicate nearby obstacles.
+* **Haptic Feedback:** Vibrations alert users when they approach nearby objects.
 
 ### AI-Powered Assistance
-- **Gemini AI Integration**: Uses Google's Gemini 2.0 Flash model for visual understanding
-- **Streaming Descriptions**: Continuously describes the environment when guidance is active
-- **Voice Prompts**: Ask questions about your surroundings using voice commands
-- **Conversation Memory**: Remembers previous interactions using Firebase
-- **Image History**: Stores last 5 images from conversations for contextual follow-up questions
-- **OCR Support**: Reads text from signs, menus, and crosswalk signals
+
+* **Gemini-Powered Multi-Agent Backend:** Integrates five specialized Gemini agents (Prompt, Hazard Detector, Image, Semantic, and Narrator) via a Flask middleware.
+* **Adaptive Descriptions:** The system fuses spatial and semantic insights to describe scenes contextually.
+* **Prompt vs. No-Prompt Modes:**
+
+  * *No Prompt Mode:* Automatically guides the user through live navigation.
+  * *Prompt Mode:* Responds to user-initiated questions with contextual awareness.
+* **Conversation Memory:** Uses Firebase to store previous exchanges, allowing follow-up questions with retained context.
+* **OCR Support:** Reads and describes printed text in the environment (e.g., signs, menus).
 
 ### Voice Interaction
-- **Hold-to-Speak Button**: Press and hold the on-screen button to ask questions
-- **Speech Recognition**: Transcribes voice input using Apple's Speech framework
-- **Text-to-Speech**: Speaks AI responses and navigation guidance
-- **Smart Interruption**: Automatically stops streaming descriptions when recording
+
+* **Hold-to-Speak Button:** Users can press and hold to ask questions about their surroundings.
+* **Speech Recognition:** Transcribes input using Apple’s Speech framework.
+* **Text-to-Speech Output:** Converts AI responses and navigation descriptions into natural audio.
+* **Smart Interruptions:** Automatically pauses streaming descriptions when the user is speaking.
 
 ### User Experience
-- **Full-Screen Camera Preview**: Live video feed of the camera view
-- **Movement Detection**: Only announces objects when the user is moving
-- **Distance Announcements**: Includes distance measurements with object descriptions
-- **Visual Feedback**: Shows recording status and transcriptions
+
+* **Full-Screen Camera View:** Displays a live camera feed with unobtrusive UI.
+* **Movement Detection:** Announces obstacles only when the user is moving.
+* **Distance Announcements:** Includes distance values in object descriptions.
+* **Visual Feedback:** Provides real-time transcription and recording indicators.
+
+---
+
+## How We Built It
+
+PathFindr is built around a **multimodal AI architecture** that merges **on-device sensing** with a **Gemini-powered multi-agent backend**.
+
+1. **Frontend (iOS, Swift + ARKit):**
+
+   * Captures LiDAR and RGB camera data.
+   * Constructs a 3D environmental model and extracts object positions and depth information.
+   * Sends structured JSON payloads to the Flask backend.
+
+2. **Middleware (Flask):**
+
+   * Receives HTTP POST requests from the app.
+   * Forwards the processed JSON data to the **Agent Development Kit (ADK)** backend.
+
+3. **Backend (ADK with Gemini):**
+
+   * Coordinates multiple Gemini agents:
+
+     * **Prompt Agent** – interprets user prompts and orchestrates other agents.
+     * **Hazard Detector Agent** – evaluates object proximity and risk.
+     * **Image Agent** – performs advanced scene understanding.
+     * **Semantic Agent** – generates descriptive, context-aware language.
+     * **Narrator Agent** – compiles outputs into a concise, natural-language summary.
+   * Returns a unified text output for speech playback on the device.
+
+4. **Data Flow Summary:**
+
+   ```
+   LiDAR + Camera Data → Swift (ARKit) → Flask Middleware → Gemini ADK → Audio Output
+   ```
+
+## What’s Next for PathFindr
+
+The next step for PathFindr is full **end-to-end navigation** — guiding users from their current position to a specified destination using **GPS integration**. Future updates will also:
+
+* Incorporate **Google Maps APIs** for outdoor navigation.
+* Extend **Gemini memory** for persistent user profiles.
+* Optimize **energy efficiency** and reduce latency for continuous operation.
+* Explore **edge-based inference** for improved privacy and offline support.
+
+---
 
 ## Requirements
 
-- iOS 18.6 or later
-- iPhone with LiDAR sensor (iPhone 12 Pro or later)
-- Google Gemini API key
-- Firebase project (for conversation history)
-- Xcode 15.0 or later
+* **iOS 18.6 or later**
+* **iPhone 12 Pro or later** (LiDAR required)
+* **Google Gemini API key**
+* **Firebase project** (for conversation memory)
+* **Xcode 15.0 or later**
+
+---
 
 ## Setup
 
@@ -52,200 +108,117 @@ cd pathfindr
 The project uses Swift Package Manager for Firebase dependencies:
 
 1. Open `PathFindr.xcodeproj` in Xcode
-2. Go to **File** > **Add Package Dependencies**
+2. Go to **File > Add Package Dependencies**
 3. Add: `https://github.com/firebase/firebase-ios-sdk`
-4. Select **FirebaseCore** and **FirebaseFirestore**
-5. Click **Add Package**
+4. Select **FirebaseCore** and **FirebaseFirestore**, then click *Add Package*
 
 ### 3. Configure API Keys
 
-1. Copy `PathFindr/System/APIKeys.example.swift` to `PathFindr/System/APIKeys.swift`
-2. Add your Gemini API key:
-   ```swift
-   static let geminiAPIKey = "YOUR_GEMINI_API_KEY_HERE"
-   ```
-3. Get your Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
+Copy:
+
+```
+PathFindr/System/APIKeys.example.swift → PathFindr/System/APIKeys.swift
+```
+
+Edit the file to include your Gemini API key:
+
+```swift
+static let geminiAPIKey = "YOUR_GEMINI_API_KEY_HERE"
+```
 
 ### 4. Configure Firebase
 
-1. Create a Firebase project at [Firebase Console](https://console.firebase.google.com/)
-2. Add an iOS app with bundle identifier: `com.atirupati07.pathfindr`
-3. Download `GoogleService-Info.plist` from Firebase Console
-4. Copy `PathFindr/GoogleService-Info.example.plist` to `PathFindr/GoogleService-Info.plist` and fill in your Firebase credentials
-5. Enable Firestore Database in Firebase Console
-5. Set up Firestore security rules (test mode for development):
-   ```
-   rules_version = '2';
-   service cloud.firestore {
-     match /databases/{database}/documents {
-       match /conversations/{userId}/exchanges/{exchangeId} {
-         allow read, write: if request.time < timestamp.date(2024, 12, 31);
-       }
-     }
-   }
-   ```
+1. Create a Firebase project in the [Firebase Console](https://firebase.google.com/).
+2. Add an iOS app with bundle ID: `com.atirupati07.pathfindr`
+3. Download `GoogleService-Info.plist` and place it in `PathFindr/`
+4. Enable **Firestore Database** and set up basic test rules:
+
+```javascript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /conversations/{userId}/exchanges/{exchangeId} {
+      allow read, write: if request.time < timestamp.date(2024, 12, 31);
+    }
+  }
+}
+```
 
 ### 5. Build and Run
 
-1. Open the project in Xcode
-2. Select your development team in the project settings
-3. Connect your iPhone (with LiDAR) via USB
-4. Build and run (Cmd+R)
+* Open the project in Xcode
+* Select your development team
+* Connect your iPhone (with LiDAR)
+* Build and run using **Cmd + R**
+
+---
 
 ## Usage
 
 ### Starting Navigation
 
-1. Launch the app
-2. Grant camera, microphone, and motion permissions
-3. Tap **"Start Guidance"** to begin navigation
-4. The app will start describing your surroundings
+1. Launch the app and grant camera, microphone, and motion permissions.
+2. Tap **Start Guidance**.
+3. The app will describe your surroundings using spatial audio and haptic feedback.
 
 ### Asking Questions
 
-1. Press and hold the **blue microphone button** on the screen
-2. Speak your question (e.g., "What is this?", "What color was the MacBook?")
-3. Release the button when finished
-4. The app will process your question and speak the answer
+1. Press and hold the **blue microphone button**.
+2. Ask a question (e.g., *“What’s in front of me?”* or *“How far is the wall?”*).
+3. Release to send; the app will respond through audio.
 
-### Features in Action
+### Dual Modes
 
-- **Streaming Mode**: When guidance is active, the app continuously describes objects and distances
-- **Prompt Mode**: When you ask a question, streaming stops and the app focuses on answering
-- **Memory**: The app remembers previous conversations, so you can ask follow-up questions
-- **Image Context**: The app uses the last 5 images from your conversation history for context
+* **Streaming Mode:** Continuous navigation with live descriptions.
+* **Prompt Mode:** Stops streaming to process and answer user queries.
 
-## Architecture
-
-### Key Components
-
-- **Navigator**: Main coordinator that manages AR, speech, and AI interactions
-- **ARDepthSession**: Handles ARKit session and depth data processing
-- **GeminiClient**: Communicates with Google Gemini API for visual understanding
-- **FirebaseConversationService**: Manages conversation history storage and retrieval
-- **SpeechTranscriber**: Handles voice input transcription
-- **SpeechGuide**: Handles text-to-speech output
-- **MotionHeading**: Tracks device orientation and user movement
-
-### Data Flow
-
-1. **AR Frames**: ARKit provides camera frames and depth data
-2. **Streaming Descriptions**: Gemini analyzes frames and provides object descriptions
-3. **Voice Input**: User presses hold button → speech is transcribed → sent to Gemini
-4. **Conversation History**: Previous exchanges (with images) are retrieved from Firebase
-5. **AI Response**: Gemini responds with context from history → text-to-speech output
-6. **Storage**: New exchanges are saved to Firebase with images
-
-## Project Structure
-
-```
-PathFindr/
-├── App/
-│   └── MainApp.swift              # App entry point with Firebase initialization
-├── AI/
-│   └── GeminiClient.swift         # Gemini API integration
-├── AR/
-│   └── ARDepthSession.swift       # ARKit session management
-├── Coordinator/
-│   └── Navigator.swift            # Main navigation coordinator
-├── Guidance/
-│   ├── SpeechGuide.swift          # Text-to-speech
-│   ├── SpatialBeacon.swift        # Spatial audio guidance
-│   └── Haptics.swift              # Haptic feedback
-├── Mapping/
-│   ├── FloorEstimator.swift       # Floor detection
-│   └── OccupancyGrid.swift        # Obstacle mapping
-├── Perception/
-│   ├── ObjectDetector.swift       # Object detection
-│   └── DepthFusion.swift          # Depth data processing
-├── Planning/
-│   ├── AStar.swift                # Pathfinding algorithm
-│   └── CommandSynthesizer.swift   # Navigation commands
-├── System/
-│   ├── APIKeys.swift              # API keys configuration
-│   ├── FirebaseConversationService.swift  # Conversation history
-│   ├── MotionHeading.swift        # Motion tracking
-│   └── SpeechTranscriber.swift    # Voice input
-├── ContentView.swift              # Main UI with hold-to-speak button
-├── Info.plist                     # App configuration
-├── GoogleService-Info.plist       # Firebase configuration (not in repo)
-└── GoogleService-Info.example.plist  # Firebase configuration template
-```
-
-## Configuration
-
-### API Keys
-
-Create `PathFindr/System/APIKeys.swift`:
-```swift
-struct APIKeys {
-    static let geminiAPIKey = "YOUR_GEMINI_API_KEY_HERE"
-    static let firebaseAPIKey = "YOUR_FIREBASE_API_KEY"
-    static let firebaseAppID = "YOUR_FIREBASE_APP_ID"
-    static let firebaseProjectID = "YOUR_FIREBASE_PROJECT_ID"
-    static let firebaseMessagingSenderID = "YOUR_FIREBASE_SENDER_ID"
-}
-```
-
-### Firebase Setup
-
-1. Initialize Firebase in `MainApp.swift` (already done)
-2. Enable Firestore in Firebase Console
-3. Configure security rules for your use case
-4. The app uses `default_user` as the user ID (can be customized for multi-user support)
+---
 
 ## Troubleshooting
 
-### App Icon Not Showing
-- Delete the app from your device
-- Clean build folder in Xcode (Cmd+Shift+K)
-- Rebuild and reinstall
+**App Icon Not Showing**
 
-### Firebase Not Working
-- Verify `GoogleService-Info.plist` is in the project and added to target
-- Check that Firestore is enabled in Firebase Console
-- Verify security rules allow read/write operations
-- Check Xcode console for Firebase errors
+* Delete the app and clean the Xcode build folder (`Cmd+Shift+K`) before rebuilding.
 
-### Voice Input Not Working
-- Grant microphone and speech recognition permissions
-- Check that the hold button is responding (should turn red when pressed)
-- Verify audio session permissions in Settings
+**Firebase Not Working**
 
-### Low Volume
-- Check device volume settings
-- The app uses maximum volume setting (1.0)
-- Audio session is configured for playback mode
+* Ensure `GoogleService-Info.plist` is correctly added and included in build targets.
 
-### Memory Not Working
-- Verify Firebase is properly configured
-- Check that images are being saved to Firestore
-- Look for Firebase errors in the console
-- Ensure Firestore security rules allow write operations
+**Voice Input Issues**
+
+* Grant microphone and speech recognition permissions.
+* Verify the hold button changes color when pressed.
+
+**Low Audio Output**
+
+* Check device volume settings; the app outputs at max audio level.
+
+---
 
 ## Development
 
 ### Building for Device
 
-1. Connect iPhone with LiDAR via USB
-2. Select your development team in Xcode
-3. Select your device as the build target
-4. Build and run (Cmd+R)
+* Use a real iPhone with LiDAR support.
+* Select your Apple Developer Team in Xcode.
+* Build and run directly (Cmd+R).
 
 ### Testing
 
-- Test on a physical device with LiDAR (simulator doesn't support ARKit/LiDAR)
-- Grant all required permissions
-- Test voice input in a quiet environment
-- Verify Firebase connection and data storage
+* Test in quiet environments to ensure accurate speech detection.
+* Validate Firestore storage for conversation history.
+
+---
 
 ## License
 
-This project is part of a hackathon submission.
+This project was developed as part of a hackathon submission.
+
+---
 
 ## Acknowledgments
 
-- Google Gemini API for visual understanding
-- Firebase for conversation history storage
-- Apple ARKit for spatial awareness
-- Apple Speech Framework for voice recognition
+* **Google Gemini API** – Multimodal vision and language understanding
+* **Apple ARKit** – Real-time spatial mapping
+* **Firebase** – Conversation memory and cloud storage
+* **Apple Speech Framework** – Voice recognition and synthesis
