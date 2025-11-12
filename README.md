@@ -1,4 +1,5 @@
 # PathFindr
+(2025 AI ATL Hackathon Winner)
 
 **PathFindr** is an iOS application designed to help people who are visually impaired navigate their surroundings using ARKit, LiDAR depth sensing, and a multimodal AI backend powered by Google’s Gemini models. The app provides real-time obstacle detection, spatial audio guidance, haptic feedback, and intelligent conversational assistance—all through a natural, voice-driven interface.
 
@@ -16,7 +17,7 @@
 
 ### AI-Powered Assistance
 
-* **Gemini-Powered Multi-Agent Backend:** Integrates five specialized Gemini agents (Prompt, Hazard Detector, Image, Semantic, and Narrator) via a Flask middleware.
+* **Gemini-Powered Multi-Agent Backend:** Integrates five specialized Gemini agents (Prompt, Hazard Detector, Image, Semantic, and Narrator) into a Google ADK framework, connected via a Flask middleware.
 * **Adaptive Descriptions:** The system fuses spatial and semantic insights to describe scenes contextually.
 * **Prompt vs. No-Prompt Modes:**
 
